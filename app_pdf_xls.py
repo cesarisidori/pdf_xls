@@ -46,38 +46,59 @@ if archivo_subido is not None:
             paginas_a_procesar = pdf.pages[pagina_inicio - 1:]
             total_a_procesar = len(paginas_a_procesar)
             
+            # Tolerancia visual para números compactos y centrados
+            ajustes_tabla = {
+                "vertical_strategy": "text", 
+                "horizontal_strategy": "text",
+                "snap_tolerance": 4,      
+                "text_tolerance": 4       
+            }
+            
             for idx, pagina in enumerate(paginas_a_procesar):
                 # Actualizar progreso en la interfaz web
                 porcentaje = int((idx + 1) / total_a_procesar * 100)
                 barra_progreso.progress(porcentaje)
                 texto_estado.text(f"Procesando página {pagina_inicio + idx} de {total_paginas}...")
                 
-                # Extraer tablas de la página actual
-                tablas_pagina = pagina.extract_tables()
+                # Extraer tablas aplicando la configuración especial de tolerancia visual
+                tablas_pagina = pagina.extract_tables(table_settings=ajustes_tabla)
                 
                 for tabla in tablas_pagina:
                     if not tabla or len(tabla) < 2:
                         continue
                     
                     tablas_encontradas += 1
-                    df_tabla = pd.DataFrame(tabla[1:], columns=tabla[0])
+                    
+                    # Limpiamos y preparamos encabezados temporales para esta página
+                    encabezados = [str(c).strip() if c is not None else "" for c in tabla[0]]
+                    
+                    # Renombramos al vuelo nombres vacíos para no perder posiciones físicas
+                    encabezados_limpios = []
+                    for i, enc in enumerate(encabezados):
+                        if enc == "" or "unnamed" in enc.lower():
+                            encabezados_limpios.append(f"Columna_{i}")
+                        else:
+                            encabezados_limpios.append(enc)
+                    
+                    df_tabla = pd.DataFrame(tabla[1:], columns=encabezados_limpios)
                     
                     # Limpieza dinámica de encabezados repetidos por saltos de página
                     if not df_tabla.empty:
-                        columnas_actuales = [str(c).strip().lower() for c in df_tabla.columns]
-                        primera_fila = [str(x).strip().lower() for x in df_tabla.iloc[0].values]
-                        
-                        if primera_fila == columnas_actuales:
+                        primera_fila = [str(x).strip() for x in df_tabla.iloc[0].values]
+                        if primera_fila == encabezados_limpios:
                             df_tabla = df_tabla.iloc[1:].reset_index(drop=True)
                     
                     if df_tabla.empty:
                         continue
                     
-                    # Estandarización generalista de nombres de columnas coincidentes
+                    # Forzar acople por posición física de las columnas
                     if columnas_referencia is None:
                         columnas_referencia = df_tabla.columns
                     else:
                         if len(df_tabla.columns) == len(columnas_referencia):
+                            df_tabla.columns = columnas_referencia
+                        elif len(df_tabla.columns) > len(columnas_referencia):
+                            df_tabla = df_tabla.iloc[:, :len(columnas_referencia)]
                             df_tabla.columns = columnas_referencia
                     
                     lista_tablas.append(df_tabla)
@@ -90,16 +111,14 @@ if archivo_subido is not None:
         if lista_tablas:
             df_final = pd.concat(lista_tablas, ignore_index=True)
             
-            # 1. Limpieza de columnas fantasma conocidas
+            # 1. Limpieza de columnas basura de texto conocidas al final
             columnas_a_borrar = r'\(hh:mm\)|al año'
             df_final = df_final.loc[:, ~df_final.columns.str.contains(columnas_a_borrar, case=False, na=False)]
             
-            # 2. LIMPIEZA DE COLUMNAS VACÍAS O SIN NOMBRE
-            df_final = df_final.loc[:, df_final.columns.notna()]
-            df_final = df_final.loc[:, df_final.columns != '']
-            df_final = df_final.loc[:, ~df_final.columns.str.contains('^Unnamed', case=False, na=False)]
+            # 2. Quitar únicamente columnas que estén COMPLETAMENTE vacías en todo el documento
+            df_final = df_final.dropna(how='all', axis=1)
             
-            # 3. Forzar a que todos los nombres de columna sean únicos (Solución definitiva para PyArrow)
+            # 3. Forzar a que todos los nombres de columna sean únicos (Para PyArrow en Streamlit)
             columnas_unicas = []
             conteos = {}
             for col in df_final.columns:
@@ -112,12 +131,36 @@ if archivo_subido is not None:
                     columnas_unicas.append(col_str)
             df_final.columns = columnas_unicas
             
+            # 🔥 PARTE NUEVA: Conversión inteligente de texto a números reales (ej: '54,023' -> 54.023)
+            for col in df_final.columns:
+                # Intentamos procesar columnas que tengan palabras clave como "km", "distancia", "origen" o "longitud"
+                # O de manera generalizada, columnas donde la mayoría de los valores parezcan números estructurados
+                col_lower = col.lower()
+                if any(k in col_lower for k in ["km", "distancia", "origen", "longitud", "long", "columna"]):
+                    # Eliminamos espacios en blanco, convertimos a string para asegurar el método .str
+                    valores_limpios = df_final[col].astype(str).str.strip()
+                    
+                    # Caso común: Si el número tiene comas como decimales y puntos de miles (ej: 1.234,56 o 54,023)
+                    # Para simplificar y estandarizar la extracción de pdfplumber (que suele extraer con coma decimal),
+                    # primero quitamos los puntos de miles (si los hay) y cambiamos la coma por el punto decimal de Python.
+                    valores_limpios = valores_limpios.str.replace('.', '', regex=False) # Quita puntos de miles
+                    valores_limpios = valores_limpios.str.replace(',', '.', regex=False) # Convierte coma decimal a punto
+                    
+                    # Convertimos a formato numérico de pandas. Si encuentra un texto no numérico, lo deja como NaN (Coerce)
+                    df_final[col] = pd.to_numeric(valores_limpios, errors='coerce')
+            
             st.balloons() 
             st.success(f"✅ ¡Proceso completado! Se consolidaron {tablas_encontradas} tablas en un total de {len(df_final)} filas.")
             
             # Mostrar la vista previa de los datos
             st.subheader("👀 Vista previa de los datos consolidados:")
             st.dataframe(df_final.head(20), use_container_width=True)
+            
+            # Conversión a Bytes del Excel en memoria
+            output = io.BytesIO()
+            with pd.ExcelWriter(output, engine='openpyxl') as writer:
+                df_final.to_excel(writer, sheet_name='Datos_Consolidados', index=False)
+            datos_excel = output.getvalue()
             
             # 5. Botón de descarga de Excel nativo de Streamlit
             st.download_button(
