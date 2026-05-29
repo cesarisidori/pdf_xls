@@ -90,23 +90,34 @@ if archivo_subido is not None:
         if lista_tablas:
             df_final = pd.concat(lista_tablas, ignore_index=True)
             
-            # --- LIMPIEZA AUTOMÁTICA DE COLUMNAS FANTASMA ---
-            # Borra columnas raras como '(hh:mm)', 'al año' o las que Pandas llame 'Unnamed'
-            columnas_a_borrar = r'\(hh:mm\)|al año|^Unnamed'
+            # 1. Limpieza de columnas fantasma conocidas
+            columnas_a_borrar = r'\(hh:mm\)|al año'
             df_final = df_final.loc[:, ~df_final.columns.str.contains(columnas_a_borrar, case=False, na=False)]
             
-            st.balloons() # ¡Efecto visual de celebración!
+            # 2. LIMPIEZA DE COLUMNAS VACÍAS O SIN NOMBRE
+            df_final = df_final.loc[:, df_final.columns.notna()]
+            df_final = df_final.loc[:, df_final.columns != '']
+            df_final = df_final.loc[:, ~df_final.columns.str.contains('^Unnamed', case=False, na=False)]
+            
+            # 3. Forzar a que todos los nombres de columna sean únicos (Solución definitiva para PyArrow)
+            columnas_unicas = []
+            conteos = {}
+            for col in df_final.columns:
+                col_str = str(col).strip()
+                if col_str in conteos:
+                    conteos[col_str] += 1
+                    columnas_unicas.append(f"{col_str}_{conteos[col_str]}")
+                else:
+                    conteos[col_str] = 0
+                    columnas_unicas.append(col_str)
+            df_final.columns = columnas_unicas
+            
+            st.balloons() 
             st.success(f"✅ ¡Proceso completado! Se consolidaron {tablas_encontradas} tablas en un total de {len(df_final)} filas.")
             
-            # Mostrar una vista previa de los datos en la web
+            # Mostrar la vista previa de los datos
             st.subheader("👀 Vista previa de los datos consolidados:")
             st.dataframe(df_final.head(20), use_container_width=True)
-            
-            # Convertir el DataFrame de Pandas a bytes de Excel en memoria para que Streamlit lo pueda descargar
-            output = io.BytesIO()
-            with pd.ExcelWriter(output, engine='openpyxl') as writer:
-                df_final.to_excel(writer, sheet_name='Datos_Consolidados', index=False)
-            datos_excel = output.getvalue()
             
             # 5. Botón de descarga de Excel nativo de Streamlit
             st.download_button(
