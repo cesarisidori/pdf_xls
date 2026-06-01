@@ -6,8 +6,8 @@ import io
 # Configuración de la página de Streamlit
 st.set_page_config(page_title="Extractor de PDFs a Excel", page_icon="📊", layout="wide")
 
-st.title("📊 Extractor de Tablas (Tu Versión Base)")
-st.write("Sube tu archivo PDF para procesarlo con tu script ultra-liviano original y consolidarlo en un Excel.")
+st.title("📊 Extractor de Tablas PDF a Excel (versión base)")
+st.write("Sube tu archivo PDF para procesarlo con tu script consolidarlo en un Excel.")
 
 # 1. Selector de archivos (reemplaza las rutas fijas en disco)
 archivo_subido = st.file_uploader("Elige un archivo PDF", type=["pdf"])
